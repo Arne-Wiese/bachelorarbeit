@@ -1,0 +1,10 @@
+Cython
+matplotlib
+numpy
+scipy
+termcolor
+pandas
+scikit-learn
+tensorflow
+keras
+tqdm
