@@ -12,7 +12,7 @@ In the setting of high-dimensional clustering, a sub-taxonomy exists differentia
 **PCAfold** requires Python>=3.8 and the latest versions of the packages in requirements.txt.
 Change to root of this repo and install all necessary dependencies:
 
-```
+```bash
 conda install --file requirements.txt
 ```
 
@@ -27,7 +27,7 @@ cd PCAfold
 
 Run the installation:
 
-```
+```bash
 python -m pip install .
 ```
 
