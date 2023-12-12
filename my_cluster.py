@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.cluster import AgglomerativeClustering
 from scipy.cluster.hierarchy import dendrogram
 
+#TODO: less variables
 class myCluster:
     def __init__(self, data, n_cluster, n_components):
         self.data = data
@@ -18,6 +19,10 @@ class myCluster:
         self.centroids = get_centroids(data, self.vqpca.idx)
         model = AgglomerativeClustering(distance_threshold=0, n_clusters=None)
         self.model = model.fit((np.array(self.eigenvectors)[:, :, 0]))
+        self.hierarchy = []
+        for eig in range(self.eigenvectors.shape[0]):
+            self.hierarchy.append({'eigenvectors': self.eigenvectors[eig, :, :],
+                                    'id': eig, 'parents': 'leaf', 'layer': 0})
 
     def plot_dendrogram(self, **kwargs):
         # Create linkage matrix and then plot the dendrogram
@@ -37,17 +42,21 @@ class myCluster:
         ).astype(float)
         # Plot the corresponding dendrogram
         dendrogram(linkage_matrix, **kwargs)
-    
+
+
     def agg_eigenvectors(self):
         # For each child, create new aggregated vector and centroid
-        for child in self.model.children_:
+        for i, child in enumerate(self.model.children_):
             agg_row = np.expand_dims(np.mean(self.eigenvectors[[child[0], child[1]], :], axis=0), axis=0)
             self.eigenvectors = np.vstack([self.eigenvectors, agg_row])
+            desired_ids = [child[0], child[1]]
+            desired_layer = [entry['layer'] for entry in self.hierarchy if entry['id'] in desired_ids]
+            self.hierarchy.append({'eigenvectors': np.squeeze(agg_row, axis=0), 'id': i+self.n_cluster,
+                                   'parents': (child[0], child[1]), 'layer': max(desired_layer) + 1})
             agg_cen = np.mean(self.centroids[[child[0], child[1]], :], axis=0).T
             self.centroids = np.vstack([self.centroids, agg_cen])
 
     def plot_2d_scatter(self, dim1, dim2):
-
         # Number of categories (clusters, groups, etc.)
         n_categories = self.eigenvectors.shape[0]
         # Get the Viridis colormap
