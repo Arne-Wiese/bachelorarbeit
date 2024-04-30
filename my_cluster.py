@@ -14,8 +14,7 @@ import sys
 import matplotlib.tri as mtri
 import itertools
 from mpl_toolkits.mplot3d import Axes3D
-from sklearn import decomposition
-
+from sklearn.decomposition import PCA
 
 class myCluster:
     def __init__(self, data, n_cluster, n_components):
@@ -23,34 +22,53 @@ class myCluster:
         self.n_cluster = n_cluster
         self.n_components = n_components
         # Creates self.vqpca attributes wherer the rec. error in min after 10 turns.
-        self._initialize_vqpca()
-        self.eigenvectors = np.stack(self.vqpca.A)
+        self._initialize_vqpca() 
+        self.eigenvectors = self._compute_own_eigenvectors(self.vqpca.idx, data, n_cluster, n_components)
         self.centroids = get_centroids(data, self.vqpca.idx)
         # Create self.model which is AgglomerativeClustering object.
         self._init_agglo_clustering()
         # Create new eigenvectors based on hierarchy of clusters.
         self._create_hierarchy()
+    
+    def _compute_own_eigenvectors(self, vqpca, data, n_cluster, n_components):
+        eigenvecs_list = []
+        centroids = get_centroids(data, vqpca)
+        for i in range(n_cluster):
+            c_points = (data[vqpca == i])
+            c_points = c_points - centroids[i]
+            _ , eigenvecs = np.linalg.eig(np.transpose(c_points) @ c_points)
+            eigenvecs_list.append(eigenvecs)
+        corrected_columns_new = [arr[:, 0:n_components] for arr in eigenvecs_list]
+        return np.stack(corrected_columns_new)
 
     def _initialize_vqpca(self):
         # Perform VQPCA and safe eigenvectors + centroids
         # Idea: Perform it 10 times and take the representation with the min rec. error
-        while True:
+        counter = 0
+        while counter < 100:
             try:
                 self.vqpca = VQPCA(self.data, n_clusters=self.n_cluster, n_components=self.n_components,
-                            scaling='none', idx_init='random', max_iter=100, tolerance=1.0e-16, verbose=False)
+                            scaling='none', idx_init='random', max_iter=100, tolerance=1.0e-08, verbose=False)
+                print('found model')
                 break
             except:
+                counter += 1
                 pass
-        for _ in range(15):
-            while True:
-                try:
-                    vqpca = VQPCA(self.data, n_clusters=self.n_cluster, n_components=self.n_components,
-                                scaling='none', idx_init='random', max_iter=100, tolerance=1.0e-20, verbose=False)
-                    if (vqpca.global_mean_squared_reconstruction_error < self.vqpca.global_mean_squared_reconstruction_error):
-                        self.vqpca = vqpca
-                    break
-                except:
-                    pass
+        if(counter < 100):
+            for _ in range(3):
+                counter = 0
+                while counter < 100:
+                    try:
+                        vqpca = VQPCA(self.data, n_clusters=self.n_cluster, n_components=self.n_components,
+                                    scaling='none', idx_init='random', max_iter=100, tolerance=1.0e-08, verbose=False)
+                        if (vqpca.global_mean_squared_reconstruction_error < self.vqpca.global_mean_squared_reconstruction_error):
+                            self.vqpca = vqpca
+                        break
+                    except:
+                        counter += 1
+                        pass
+        else:
+            print('Tried 100 times to init VQPCA, but failed. Probably convergence not reaches.')
 
     def _init_agglo_clustering(self):
         # try if it is better then 'ward' (based on variance) & eucledian. Make parameters variable.
@@ -59,12 +77,13 @@ class myCluster:
                                         metric='precomputed')
         # Reshape array from (x, y, n) to (x, y)
         frob_array = self.eigenvectors.reshape(self.n_cluster, -1)
+        centroids_matrix = cdist(self.centroids, self.centroids, 'euclidean') 
         # Compute pairwise Frobenius distances
         distance_matrix = cdist(frob_array, frob_array, 'euclidean')
         distance_matrix1 = cdist(frob_array, -frob_array, 'euclidean')
         # Get the min dist entry of both matrices
         min_matrix = np.minimum(distance_matrix, distance_matrix1)
-        self.model = model.fit(min_matrix)
+        self.model = model.fit(min_matrix + centroids_matrix)
 
     def _create_hierarchy(self):
         self.hierarchy = []
@@ -163,7 +182,7 @@ class myCluster:
             # mean rec. error of the selected clusters
             rec = np.mean(self.compute_reconstruction_error(*elem))
             num_params = len(elem)
-            # MDL = Bits(model parameters) + Bits(data | model)
+            # MDL = Bits(model parameters) + Bits(data | model), include components!
             mdl = 0.5 * param_scaler.transform(np.asarray(num_params * np.log2(len(
                 self.data))).reshape(-1, 1)) + 0.5 * rec_scaler.transform(np.asarray(np.log2(rec)).reshape(-1, 1))
             mdl_array.append(mdl[0, 0])
@@ -188,11 +207,14 @@ class myCluster:
         min_mdl = float('inf') 
         model = None
         for i in range(1, n_dim + 1):
-            while True:
+            counter = 0
+            while counter < 100:
                 try:
                     model1 = myCluster(data, n_cluster, i)
+                    print(f'Finished for dim {i}')
                     break
                 except:
+                    counter += 1
                     pass
             mdl, comps = model1.calculate_mdl()
             mdl_scores.append(mdl)
@@ -203,36 +225,40 @@ class myCluster:
                 model = model1
                 min_mdl = min_val
 
-        # Initialize figure for both plots
-        fig = plt.figure(figsize=(12, 6))
+        if(data.shape[1] > 2 and counter < 100):
+            # Initialize figure for both plots
+            fig = plt.figure(figsize=(12, 6))
 
-        # 3D landscape plot
-        ax1 = fig.add_subplot(1, 2, 1, projection='3d')
-        k = [item for sublist in subspaces for item in sublist]
-        l = [item for sublist in pcs for item in sublist]
-        rl = [item for sublist in mdl_scores for item in sublist]
-        triang = mtri.Triangulation(k, l)
-        ax1.plot_trisurf(triang, rl, cmap='jet')
-        ax1.scatter(k, l, rl, marker='.', s=10, c="black", alpha=0.5)
-        ax1.view_init(elev=50, azim=-45)
-        ax1.set_xticks(np.arange(1, max(k) + 1))
-        ax1.set_yticks(np.arange(1, n_dim + 1))
-        ax1.set_xlabel('# Subspaces')
-        ax1.set_ylabel('# Principal Components')
-        ax1.set_zlabel('MDL Score')
+            # 3D landscape plot
+            ax1 = fig.add_subplot(1, 2, 1, projection='3d')
+            k = [item for sublist in subspaces for item in sublist]
+            l = [item for sublist in pcs for item in sublist]
+            rl = [item for sublist in mdl_scores for item in sublist]
+            triang = mtri.Triangulation(k, l)
+            ax1.plot_trisurf(triang, rl, cmap='jet')
+            ax1.scatter(k, l, rl, marker='.', s=10, c="black", alpha=0.5)
+            ax1.view_init(elev=50, azim=-45)
+            ax1.set_xticks(np.arange(1, max(k) + 1))
+            ax1.set_yticks(np.arange(1, n_dim + 1))
+            ax1.set_xlabel('# Subspaces')
+            ax1.set_ylabel('# Principal Components')
+            ax1.set_zlabel('MDL Score')
 
-        # 2D plot
-        ax2 = fig.add_subplot(1, 2, 2)
-        for i in range(len(subspaces)):
-            ax2.plot(subspaces[i], mdl_scores[i], label=f'{i+1} PC')
-        ax2.set_xlabel('# Subspaces')
-        ax2.set_ylabel('MDL Score')
-        ax2.legend()
+            # 2D plot
+            ax2 = fig.add_subplot(1, 2, 2)
+            for i in range(len(subspaces)):
+                ax2.plot(subspaces[i], mdl_scores[i], label=f'{i+1} PC')
+            ax2.set_xlabel('# Subspaces')
+            ax2.set_ylabel('MDL Score')
+            ax2.legend()
 
-        # Adjust layout
-        plt.subplots_adjust(wspace=0.4)
+            # Adjust layout
+            plt.subplots_adjust(wspace=0.4)
 
-        plt.show()
+            plt.show()
+        else:
+            print(f'Counter: {counter}')
+            return
 
         return model
     
@@ -337,11 +363,42 @@ class myCluster:
                         self.eigenvectors[args, dim1, i], self.eigenvectors[args, dim2, i],
                         color=colors, scale=5, edgecolor='black', linewidth=1)
 
-        plt.xlabel('Dim 1')
-        plt.ylabel('Dim 2')
+        plt.xlabel(f'Dim {dim1}')
+        plt.ylabel(f'Dim {dim2}')
         # Show the
         # Show legend
         plt.legend()
+        plt.show()
+
+    def plot_3d_scatter(self, dim1, dim2, dim3, *args, vectors=False):
+        n_categories = len(args)
+        # Get the Viridis colormap
+        viridis_cmap = plt.cm.get_cmap('viridis', n_categories)
+        # Generate a list of colors
+        colors = [viridis_cmap(i) for i in range(n_categories)]
+        
+        # Create a 3D plot
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Access the VQPCA clustering solution
+        for index, i in enumerate(args):
+            cluster_points = [dic['clusterPoints']
+                            for dic in self.hierarchy if dic['id'] == i]
+            cluster_points = np.squeeze(cluster_points, axis=0)
+            ax.scatter(cluster_points[:, dim1], cluster_points[:, dim2], cluster_points[:, dim3],
+                    color=colors[index], label=f'Cluster {i} ({len(cluster_points)})')
+
+        if vectors:
+            for i in range(self.n_components):
+                ax.quiver(self.centroids[args, dim1], self.centroids[args, dim2], self.centroids[args, dim3],
+                        self.eigenvectors[args, dim1, i], self.eigenvectors[args, dim2, i], self.eigenvectors[args, dim3, i],
+                        color=colors, length=0.1, normalize=True)
+
+        ax.set_xlabel(f'Dim {dim1}')
+        ax.set_ylabel(f'Dim {dim2}')
+        ax.set_zlabel(f'Dim {dim3}')
+        ax.legend()
         plt.show()
 
     def info(self):
